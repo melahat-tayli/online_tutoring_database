@@ -1,0 +1,230 @@
+DELIMITER //
+DROP TRIGGER IF EXISTS after_schedules_insert;
+CREATE TRIGGER after_schedules_insert AFTER INSERT ON schedules
+FOR EACH ROW
+/* This trigger automatically insert schedule_id, student_id, due_payment, balance values to payment table after an insert to schedules table.*/
+
+BEGIN
+    DECLARE duePayment float;
+    DECLARE scheduleId int;
+    DECLARE studentId int;
+    DECLARE scheduleDate date;
+    DECLARE myBalance float;
+    SELECT schedule_id INTO scheduleId FROM schedules WHERE schedule_id=NEW.schedule_id;
+    SELECT student_id INTO studentId FROM schedules WHERE schedule_id=NEW.schedule_id;
+    SELECT schedule_date INTO scheduleDate FROM schedules WHERE schedule_id=NEW.schedule_id ;
+    SELECT fee INTO duePayment FROM course_fee WHERE course_id=NEW.course_id AND student_id=NEW.student_id AND (scheduleDate BETWEEN from_date AND COALESCE(to_date, NOW()));
+    INSERT INTO payment(schedule_id, student_id, due_payment) VALUES(scheduleId, studentId, duePayment);
+    SELECT balance INTO myBalance  FROM payment WHERE schedule_id= (scheduleId-1);
+    UPDATE payment SET balance=(coalesce(mybalance, 0) + duePayment) WHERE schedule_id=scheduleId;
+END //
+DELIMITER ;
+
+
+DELIMITER //
+DROP PROCEDURE IF EXISTS UpdatePaymentsWithName;
+CREATE PROCEDURE UpdatePaymentsWithName(IN paymentDate DATE, IN receivedPayment FLOAT, IN firstName CHAR(50), IN lastName CHAR (50))
+/* This procedure updates payment table after a new payment received from the student */
+BEGIN
+    DECLARE studentId INT;
+    DECLARE countStudentId INT;
+    DECLARE scheduleId INT;
+    SELECT COUNT(student_id) INTO countStudentId FROM student WHERE first_name=firstName AND last_name=lastName;
+    IF countStudentId=1 THEN
+        SELECT student_id INTO studentId FROM student WHERE first_name=firstName AND last_name=lastName;
+        SELECT schedule_id INTO scheduleId FROM payment WHERE student_id=studentId AND payment_date is NULL order by schedule_id ASC limit 1;
+        UPDATE payment SET payment_date=paymentDate, received_payment=receivedPayment WHERE schedule_id=scheduleId; 	
+        UPDATE payment SET balance=balance-receivedPayment WHERE schedule_id >= scheduleId;
+        
+    ELSEIF countStudentId=0 THEN
+        SELECT("There is no student with this name and surname");
+    ELSEIF countStudentId>1 THEN
+        SELECT("There is more than one student with this name and surname. Please use UpdatePaymentsWithStudentId method");
+    END IF;
+END//
+DELIMITER ;
+
+DELIMITER //
+DROP PROCEDURE IF EXISTS UpdatePaymentsWithId;
+CREATE PROCEDURE UpdatePaymentsWithId(IN paymentDate DATE, IN receivedPayment FLOAT, IN studentId INT)
+/* This procedure updates payment table after a new payment received from the student */
+BEGIN
+    DECLARE myBalance FLOAT;
+    DECLARE scheduleId INT;
+    SELECT schedule_id INTO scheduleId FROM payment WHERE student_id=studentId AND payment_date is NULL order by schedule_id ASC limit 1;
+    UPDATE payment SET payment_date=paymentDate, received_payment=receivedPayment WHERE schedule_id=scheduleId; 	
+    UPDATE payment SET balance=balance-receivedPayment WHERE schedule_id >= scheduleId;
+END//
+DELIMITER ;
+
+DELIMITER //
+DROP PROCEDURE IF EXISTS lastAssignmentAndReviewbyName;
+CREATE PROCEDURE lastAssignmentAndReviewbyName(IN firstName CHAR(50), IN lastName CHAR(50))
+/* This procedure displays student last assigment and review by calling his/her name and surname */
+BEGIN
+	DECLARE countStudentId INT;
+    SELECT COUNT(student_id) INTO countStudentId FROM student WHERE first_name=firstName AND last_name=lastName;
+    IF countStudentId=1 THEN
+        SELECT schedules.assignment, schedules.notes
+        FROM schedules
+        INNER JOIN student USING(student_id)
+        WHERE student_id =(SELECT student_id FROM student WHERE first_name=firstName AND last_name=lastName)
+        ORDER BY schedule_date DESC limit 1;
+    ELSEIF countStudentId=0 THEN
+        SELECT("There is no student with this name and surname");
+    ELSEIF countStudentId>1 THEN
+        SELECT("There is more than one student with this name and surname. Please use UpdatePaymentsWithStudentId method");
+    END IF;
+END//
+DELIMITER ;
+
+
+DELIMITER //
+DROP PROCEDURE IF EXISTS lastAssignmentAndReviewbyId;
+CREATE PROCEDURE lastAssignmentAndReviewbyId(IN studentId INT)
+/* This procedure displays student last assigment and review by calling his/her name and surname */
+BEGIN
+    SELECT student.first_name, student.last_name, schedules.assignment, schedules.notes
+    FROM schedules
+    INNER JOIN student USING(student_id)
+    WHERE student_id=studentId
+    ORDER BY schedule_date DESC limit 1;
+END//
+DELIMITER ;
+
+
+
+DELIMITER //
+DROP FUNCTION IF EXISTS selectNumberofCoursebyId;
+CREATE FUNCTION selectNumberofCoursebyId(studentId INT, courseId INT)
+RETURNS TEXT DETERMINISTIC
+/*  Create a function that calculates the number of times a student attended to a course
+     If student currently takes that course print "student is active"*/
+BEGIN
+    DECLARE numberOfCourses INT;
+    DECLARE endDate DATE;
+    DECLARE courseName VARCHAR(150);
+    DECLARE firstName CHAR(50);
+    DECLARE lastName CHAR(50);
+    /*Determine if student is a still active student by checking if his/her enrollment has an end date*/
+	SELECT end_date INTO endDate FROM enrollments WHERE student_id=studentId AND course_id=courseId;
+    SELECT course_name INTO courseName FROM courses WHERE course_id=courseId;
+    SELECT first_name INTO firstName FROM student WHERE student_id=studentId;
+    SELECT last_name INTO lastName FROM student WHERE student_id=studentId;
+	/*Return the number of courses that student attended*/
+    SELECT COUNT(schedule_id) INTO numberOfCourses FROM schedules WHERE student_id=studentId AND course_id=courseId;
+    IF courseName IS NULL THEN
+        RETURN (SELECT("There is no course with that id"));
+    ELSEIF firstName IS NULL AND lastName IS NULL THEN
+        RETURN (SELECT ("There is no student with that id"));
+    ELSEIF endDate THEN
+        RETURN (SELECT CONCAT(firstName, ' ' , lastName, ' took ', numberOfCourses, ' ',  courseName,  ' and then left the course ', courseName ));
+	ELSEIF endDate IS NULL THEN
+        RETURN(SELECT CONCAT(firstName, ' ' , lastName, ' has taken ', numberOfCourses, ' ', courseName, ' and is currently active as a student'));
+    END IF;
+END //
+DELIMITER ;
+
+
+DELIMITER //
+DROP FUNCTION IF EXISTS selectNumberofCoursebyName;
+CREATE FUNCTION selectNumberofCoursebyName(firstName CHAR(50), lastName CHAR(50), courseName VARCHAR(150))
+RETURNS TEXT DETERMINISTIC
+/*  Create a function that calculates the number of times a student attended to a course
+ If student currently takes that course print "student is active" */
+BEGIN
+    DECLARE numberOfCourses INT;
+    DECLARE studentId INT;
+    DECLARE endDate DATE;
+    DECLARE countStudentId INT;    
+    DECLARE courseId INT;
+    SELECT COUNT(student_id) INTO countStudentId FROM student WHERE first_name=firstName AND last_name=lastName;
+    IF countStudentId=1 THEN
+        SELECT student_id INTO studentId FROM student WHERE first_name=firstName AND last_name=lastName;
+        SELECT course_id INTO courseId FROM courses WHERE course_name=courseName;
+        /* Check if the course name and the student name/surname  is correctly entered */
+        IF courseId IS NULL THEN
+            RETURN (SELECT("There is no course with that course_name"));
+        ELSEIF studentId IS NULL THEN
+            RETURN (SELECT("There is no student with that name and surname"));
+        END IF;
+        
+        /*Determine if student is a still active student by checking if his/her enrollment has an end date*/
+        SELECT end_date INTO endDate FROM enrollments WHERE student_id=studentId AND course_id=courseId;
+        
+        /*Return the number of courses that student attended*/
+        SELECT COUNT(schedule_id) INTO numberOfCourses FROM schedules WHERE student_id=studentId AND course_id=courseId;
+        IF endDate THEN
+            RETURN(SELECT CONCAT(firstName, ' ' , lastName, 'took ', numberOfCourses, ' and then left'));
+        ELSEIF endDate is NULL THEN
+            RETURN(SELECT CONCAT(firstName, ' ' , lastName, ' has taken ', numberOfCourses, ' and is currently active as a student'));
+        END IF;
+        
+    ELSEIF countStudentId=0 THEN
+        RETURN (SELECT("There is no student with this name and surname"));
+    ELSEIF countStudentId>1 THEN
+        RETURN(SELECT("There is more than one student with this name and surname. Please use selectNumberofCoursebyId method"));
+    END IF;
+END //
+DELIMITER ;
+
+
+DELIMITER //
+DROP PROCEDURE IF EXISTS ReceivedPaymentsbyId;
+CREATE PROCEDURE ReceivedPaymentsbyId(IN studentId INT, IN fromDate DATE, IN toDate DATE)
+/* This procedure prints the payments done by a student in a date range. It also calculates the total amount of payments in that specific date range */
+BEGIN
+    DECLARE myCurrency CHAR(10);
+    
+	SELECT currency INTO myCurrency FROM course_fee WHERE student_id=studentId;
+    
+	SELECT s.student_id, s.first_name, s.last_name, CONCAT(p.received_payment,' ', myCurrency) AS received_payment, p.payment_date
+	FROM student AS s
+	INNER JOIN payment AS p
+	USING(student_id)
+	WHERE student_id=studentId AND p.payment_date BETWEEN fromDate AND toDate;
+    
+	SELECT CONCAT('Total payment: ', sum(received_payment), ' ', myCurrency) AS total_payment
+	FROM payment
+	WHERE student_id=studentId AND payment_date BETWEEN fromDate AND toDate;
+	    
+END//
+DELIMITER ;
+
+
+DELIMITER //
+DROP PROCEDURE IF EXISTS ReceivedPaymentsbyName;
+CREATE PROCEDURE ReceivedPaymentsbyName(IN firstName CHAR(50), IN lastName CHAR(50), IN fromDate DATE, IN toDate DATE)
+/* This procedure prints the payments done by a student in a date range. It also calculates the total amount of payments in that specific date range */
+BEGIN
+	DECLARE studentId INT;
+    DECLARE countStudentId INT;
+    DECLARE myCurrency CHAR(10);
+
+    SELECT COUNT(student_id) INTO countStudentId FROM student WHERE first_name=firstName AND last_name=lastName;
+    IF countStudentId=1 THEN
+        SELECT c.currency INTO myCurrency
+        FROM course_fee as c
+        INNER JOIN student AS s
+        USING(student_id)
+        WHERE s.first_name=firstName AND s.last_name=lastName;
+        
+        SELECT s.student_id, s.first_name, s.last_name, CONCAT(p.received_payment,' ', myCurrency), p.payment_date
+        FROM student AS s
+        INNER JOIN payment AS p
+        USING(student_id)
+        WHERE (s.first_name=firstName AND s.last_name=lastName) AND (p.payment_date BETWEEN fromDate AND toDate);
+    
+        SELECT CONCAT('Total payment: ', sum(p.received_payment), ' ', myCurrency) AS total_payment
+        FROM student AS s
+        INNER JOIN payment AS p
+        USING(student_id)
+        WHERE (s.first_name=firstName AND s.last_name=lastName) AND (p.payment_date BETWEEN fromDate AND toDate);
+	    
+        ELSEIF countStudentId=0 THEN
+            SELECT("There is no student with this name and surname");
+        ELSEIF countStudentId>1 THEN
+            SELECT("There is more than one student with this name and surname. Please use ReceivedPaymentsbyStudentId method");
+        END IF;
+END//
+DELIMITER ;
